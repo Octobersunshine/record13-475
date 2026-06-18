@@ -61,6 +61,17 @@ struct LastLearningNode {
 }
 
 #[derive(Debug, Serialize)]
+struct ResumePlayback {
+    chapter_id: String,
+    section_id: String,
+    seek_position: f32,
+    progress_percent: f32,
+    completed: bool,
+    is_resume: bool,
+    last_studied_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
 struct ApiResponse<T> {
     code: i32,
     message: String,
@@ -232,6 +243,65 @@ async fn get_last_learning_node(
     }
 }
 
+async fn get_resume_playback(
+    State(state): State<AppState>,
+    Path((user_id, course_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let result = sqlx::query_as::<_, LearningProgress>(
+        r#"
+        SELECT * FROM learning_progress
+        WHERE user_id = ? AND course_id = ?
+        ORDER BY updated_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(&user_id)
+    .bind(&course_id)
+    .fetch_optional(&state.pool)
+    .await;
+
+    match result {
+        Ok(Some(progress)) => {
+            let seek_position = progress.last_position.unwrap_or(0.0);
+            let is_resume = seek_position > 0.0 || progress.progress_percent > 0.0;
+
+            Json(ApiResponse {
+                code: 0,
+                message: if is_resume {
+                    "续播节点已就绪".to_string()
+                } else {
+                    "首次学习，从头开始".to_string()
+                },
+                data: Some(ResumePlayback {
+                    chapter_id: progress.chapter_id,
+                    section_id: progress.section_id,
+                    seek_position,
+                    progress_percent: progress.progress_percent,
+                    completed: progress.completed,
+                    is_resume,
+                    last_studied_at: progress.updated_at,
+                }),
+            })
+            .into_response()
+        }
+        Ok(None) => Json(ApiResponse {
+            code: 0,
+            message: "无学习记录，从头开始".to_string(),
+            data: None::<ResumePlayback>,
+        })
+        .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::<()> {
+                code: 500,
+                message: format!("获取失败: {}", e),
+                data: None,
+            }),
+        )
+            .into_response(),
+    }
+}
+
 async fn get_course_progress(
     State(state): State<AppState>,
     Path((user_id, course_id)): Path<(String, String)>,
@@ -309,6 +379,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/api/progress/last/:user_id/:course_id",
             get(get_last_learning_node),
+        )
+        .route(
+            "/api/progress/resume/:user_id/:course_id",
+            get(get_resume_playback),
         )
         .route(
             "/api/progress/course/:user_id/:course_id",
