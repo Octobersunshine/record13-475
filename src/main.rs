@@ -124,10 +124,20 @@ async fn save_progress(
              progress_percent, last_position, completed, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id, course_id, chapter_id, section_id) DO UPDATE SET
-            progress_percent = excluded.progress_percent,
-            last_position = COALESCE(excluded.last_position, learning_progress.last_position),
-            completed = excluded.completed,
-            updated_at = excluded.updated_at
+            progress_percent = MAX(learning_progress.progress_percent, excluded.progress_percent),
+            last_position = CASE
+                WHEN excluded.last_position IS NOT NULL
+                THEN MAX(COALESCE(learning_progress.last_position, 0), excluded.last_position)
+                ELSE learning_progress.last_position
+            END,
+            completed = MAX(learning_progress.completed, excluded.completed),
+            updated_at = CASE
+                WHEN excluded.progress_percent > learning_progress.progress_percent
+                     OR (excluded.last_position IS NOT NULL
+                          AND excluded.last_position > COALESCE(learning_progress.last_position, 0))
+                THEN excluded.updated_at
+                ELSE learning_progress.updated_at
+            END
         RETURNING *
         "#,
     )
